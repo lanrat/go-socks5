@@ -135,7 +135,9 @@ func (s *Server) serveUDPConn(udpPacket []byte, reply func([]byte) error) error 
 
 	dialUDP := s.config.DialUDP
 	if dialUDP == nil {
-		dialUDP = net.DialUDP
+		dialUDP = func(_net string, laddr, raddr *net.UDPAddr) (net.Conn, error) {
+			return net.DialUDP(_net, laddr, raddr)
+		}
 	}
 
 	target, err := dialUDP("udp", udpClientSrcAddr, targetUDPAddr)
