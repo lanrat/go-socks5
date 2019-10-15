@@ -166,6 +166,9 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 			targetUDPAddr.String(), err)
 		return err
 	}
+	if n < 0 { // a way to identify GameDataForwardingConn, and handle it separately
+		return nil
+	}
 	respBuffer = respBuffer[:len(header)+len(targetAddrRaw)+n]
 
 	if reply(respBuffer); err != nil {
