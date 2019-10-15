@@ -148,7 +148,13 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 		s.config.Logger.Printf("udp socks: %+v\n", err)
 		return err
 	}
-	defer target.Close()
+
+	var isGameDataForwardingConn bool
+	defer func() {
+		if !isGameDataForwardingConn {
+			target.Close()
+		}
+	}()
 
 	// write data to target and read the response back
 	if _, err := target.Write(udpPacket[len(header)+len(targetAddrRaw):]); err != nil {
@@ -167,6 +173,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 		return err
 	}
 	if n < 0 { // a way to identify GameDataForwardingConn, and handle it separately
+		isGameDataForwardingConn = true
 		return nil
 	}
 	respBuffer = respBuffer[:len(header)+len(targetAddrRaw)+n]
