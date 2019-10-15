@@ -9,7 +9,7 @@ import (
 
 const maxUDPPacketSize = 2 * 1024
 
-var udpClientSrcAddr = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+var udpClientSrcAddrZero = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 
 var udpPacketBufferPool = sync.Pool{
 	New: func() interface{} {
@@ -38,7 +38,7 @@ func (s *Server) handleUDP(udpConn *net.UDPConn) {
 		buffer = buffer[:n]
 		go func() {
 			defer putUDPPacketBuffer(buffer)
-			s.serveUDPConn(buffer, func(data []byte) error {
+			s.serveUDPConn(buffer, src, func(data []byte) error {
 				_, err := udpConn.WriteToUDP(data, src)
 				return err
 			})
@@ -58,7 +58,7 @@ func (s *Server) handleUDP(udpConn *net.UDPConn) {
 // ErrUDPFragmentNoSupported UDP fragments not supported error
 var ErrUDPFragmentNoSupported = errors.New("")
 
-func (s *Server) serveUDPConn(udpPacket []byte, reply func([]byte) error) error {
+func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func([]byte) error) error {
 	// RSV  Reserved X'0000'
 	// FRAG Current fragment number, donnot support fragment here
 	header := []byte{0, 0, 0}
@@ -136,14 +136,16 @@ func (s *Server) serveUDPConn(udpPacket []byte, reply func([]byte) error) error 
 	dialUDP := s.config.DialUDP
 	if dialUDP == nil {
 		dialUDP = func(_net string, laddr, raddr *net.UDPAddr) (net.Conn, error) {
-			return net.DialUDP(_net, laddr, raddr)
+			return net.DialUDP(_net, udpClientSrcAddrZero, raddr)
 		}
 	}
+
+	udpClientSrcAddr := &net.UDPAddr{IP: net.IPv4zero, Port: srcAddr.Port}
 
 	target, err := dialUDP("udp", udpClientSrcAddr, targetUDPAddr)
 	if err != nil {
 		err = fmt.Errorf("connect to %v failed: %v", targetUDPAddr, err)
-		s.config.Logger.Printf("udp socks: %+v", err)
+		s.config.Logger.Printf("udp socks: %+v\n", err)
 		return err
 	}
 	defer target.Close()
