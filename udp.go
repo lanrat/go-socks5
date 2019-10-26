@@ -149,9 +149,9 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 		return err
 	}
 
-	var isGameDataForwardingConn bool
+	var isEConn bool
 	defer func() {
-		if !isGameDataForwardingConn {
+		if !isEConn {
 			target.Close()
 		}
 	}()
@@ -172,8 +172,8 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 			targetUDPAddr.String(), err)
 		return err
 	}
-	if n < 0 { // a way to identify GameDataForwardingConn, and handle it separately
-		isGameDataForwardingConn = true
+	if n < 0 { // a way to identify EConn, and handle it separately
+		isEConn = true
 		return nil
 	}
 	respBuffer = respBuffer[:len(header)+len(targetAddrRaw)+n]
