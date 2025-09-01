@@ -242,6 +242,18 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	s.listeners = append(s.listeners, l)
 	s.mu.Unlock()
 
+	// Monitor context cancellation and close listener when cancelled
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Context cancelled, close listener to unblock Accept()
+			l.Close()
+		case <-s.shutdown:
+			// Server shutdown was called, close listener
+			l.Close()
+		}
+	}()
+
 	// open a UDP server if specified in config
 	if s.config.BindPort > 0 {
 		ip, _, _ := net.SplitHostPort(l.Addr().String())
@@ -265,6 +277,8 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-s.shutdown:
 			return nil
 		default:
@@ -272,9 +286,12 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 
 		conn, err := l.Accept()
 		if err != nil {
+			// Check if error is due to context cancellation or shutdown
 			select {
+			case <-ctx.Done():
+				return ctx.Err()
 			case <-s.shutdown:
-				return nil // Shutdown was requested, this is expected
+				return nil
 			default:
 				return err
 			}
