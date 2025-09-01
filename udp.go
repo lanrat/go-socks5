@@ -27,17 +27,19 @@ type UDPSession struct {
 
 // UDPSessionManager manages UDP sessions
 type UDPSessionManager struct {
-	mu          sync.RWMutex
-	sessions    map[string]*UDPSession // key: client address string
-	cleanup     chan struct{}
-	cleanupOnce sync.Once
+	mu           sync.RWMutex
+	sessions     map[string]*UDPSession // key: client address string (IP:port)
+	sessionsByIP map[string]*UDPSession // key: client IP string (for fast IP-only lookup)
+	cleanup      chan struct{}
+	cleanupOnce  sync.Once
 }
 
 // NewUDPSessionManager creates a new UDP session manager
 func NewUDPSessionManager() *UDPSessionManager {
 	mgr := &UDPSessionManager{
-		sessions: make(map[string]*UDPSession),
-		cleanup:  make(chan struct{}),
+		sessions:     make(map[string]*UDPSession),
+		sessionsByIP: make(map[string]*UDPSession),
+		cleanup:      make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -51,11 +53,19 @@ func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Conte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.sessions[clientAddr] = &UDPSession{
+	session := &UDPSession{
 		Context:    ctx,
 		ClientAddr: clientAddr,
 		CreatedAt:  time.Now(),
 		Request:    req,
+	}
+
+	// Store in both indexes
+	m.sessions[clientAddr] = session
+	
+	// Extract IP for IP-only index
+	if host, _, err := net.SplitHostPort(clientAddr); err == nil {
+		m.sessionsByIP[host] = session
 	}
 }
 
@@ -68,12 +78,26 @@ func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
 	return session, exists
 }
 
+// GetSessionByIP retrieves a UDP session by client IP (without port)
+func (m *UDPSessionManager) GetSessionByIP(clientIP string) *UDPSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.sessionsByIP[clientIP]
+}
+
 // UnregisterSession removes a UDP session
 func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Remove from both indexes
 	delete(m.sessions, clientAddr)
+	
+	// Extract IP and remove from IP index
+	if host, _, err := net.SplitHostPort(clientAddr); err == nil {
+		delete(m.sessionsByIP, host)
+	}
 }
 
 // Stop gracefully stops the session manager
@@ -98,7 +122,11 @@ func (m *UDPSessionManager) cleanupExpiredSessions() {
 			m.mu.Lock()
 			for addr, session := range m.sessions {
 				if now.Sub(session.CreatedAt) > sessionTimeout {
+					// Remove from both indexes
 					delete(m.sessions, addr)
+					if host, _, err := net.SplitHostPort(addr); err == nil {
+						delete(m.sessionsByIP, host)
+					}
 				}
 			}
 			m.mu.Unlock()
@@ -234,8 +262,14 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	if session, exists := s.udpSessionMgr.GetSession(srcAddr.String()); exists {
 		ctx = session.Context
 	} else {
-		// Log when UDP packet arrives without an associated session
-		s.config.Logger.Printf("udp socks: UDP packet from %v has no associated session", srcAddr)
+		// Try to find session by IP only (fallback for port mismatch)
+		srcIP := srcAddr.IP.String()
+		if ipSession := s.udpSessionMgr.GetSessionByIP(srcIP); ipSession != nil {
+			ctx = ipSession.Context
+		} else {
+			// Only log error if no session found by IP either
+			s.config.Logger.Printf("udp socks: UDP packet from %v has no associated session", srcAddr)
+		}
 	}
 
 	// resolve addr.

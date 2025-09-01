@@ -175,8 +175,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // ListenAndServe creates a network listener on the given address and serves SOCKS5 connections.
 // It blocks until the context is cancelled or an error occurs.
 // The network parameter should be "tcp", "tcp4", or "tcp6".
-func (s *Server) ListenAndServe(ctx context.Context, network, addr string) error {
-	l, err := net.Listen(network, addr)
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -230,23 +230,7 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			}
 		}
 		go func(c net.Conn) {
-			// Create per-connection context with optional timeout and connection metadata
-			var connCtx context.Context
-			var cancel context.CancelFunc
-
-			if s.config.ConnTimeout > 0 {
-				connCtx, cancel = context.WithTimeout(ctx, s.config.ConnTimeout)
-			} else {
-				connCtx, cancel = context.WithCancel(ctx)
-			}
-			defer cancel()
-
-			// Add connection metadata to context
-			connCtx = context.WithValue(connCtx, ClientAddrKey, c.RemoteAddr().String())
-			connCtx = context.WithValue(connCtx, ServerAddrKey, c.LocalAddr().String())
-			connCtx = context.WithValue(connCtx, ConnTimeKey, time.Now())
-
-			if err := s.ServeConn(connCtx, c); err != nil {
+			if err := s.ServeConn(ctx, c); err != nil {
 				s.config.Logger.Printf("failed to serve connection: %v", err)
 			}
 		}(conn)
@@ -260,6 +244,22 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	defer func() {
 		_ = conn.Close() // Ignore close errors in defer
 	}()
+
+	// Create per-connection context with optional timeout and connection metadata
+	var connCtx context.Context
+	var cancel context.CancelFunc
+
+	if s.config.ConnTimeout > 0 {
+		connCtx, cancel = context.WithTimeout(ctx, s.config.ConnTimeout)
+	} else {
+		connCtx, cancel = context.WithCancel(ctx)
+	}
+	defer cancel()
+
+	// Add connection metadata to context
+	connCtx = context.WithValue(connCtx, ClientAddrKey, conn.RemoteAddr().String())
+	connCtx = context.WithValue(connCtx, ServerAddrKey, conn.LocalAddr().String())
+	connCtx = context.WithValue(connCtx, ConnTimeKey, time.Now())
 	bufConn := bufio.NewReader(conn)
 
 	// Read the version byte
@@ -299,7 +299,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	}
 
 	// Process the client request
-	if err := s.handleRequest(ctx, request, conn); err != nil {
+	if err := s.handleRequest(connCtx, request, conn); err != nil {
 		err = fmt.Errorf("failed to handle request: %v", err)
 		s.config.Logger.Printf("socks: %v", err)
 		return err
