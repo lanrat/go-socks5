@@ -156,9 +156,7 @@ func NewRequest(bufConn io.Reader) (*Request, error) {
 }
 
 // handleRequest is used for request processing after authentication
-func (s *Server) handleRequest(req *Request, conn net.Conn) error {
-	ctx := context.Background() // TODO?
-
+func (s *Server) handleRequest(ctx context.Context, req *Request, conn net.Conn) error {
 	// Resolve the address if we have a FQDN
 	dest := req.DestAddr
 	if dest.FQDN != "" {

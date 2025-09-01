@@ -7,10 +7,20 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 )
 
 const (
 	socks5Version = uint8(5)
+)
+
+// Context keys for connection metadata
+type contextKey string
+
+const (
+	ClientAddrKey contextKey = "client_addr"
+	ServerAddrKey contextKey = "server_addr"
+	ConnTimeKey   contextKey = "conn_time"
 )
 
 // ErrorLogger error handler, compatible with std logger
@@ -52,6 +62,10 @@ type Config struct {
 	// Logger can be used to provide a custom log target.
 	// Defaults to stdout.
 	Logger ErrorLogger
+
+	// ConnTimeout is the maximum time a connection can be active.
+	// If zero (default), connections have no timeout.
+	ConnTimeout time.Duration
 
 	// Optional function for dialing out
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -108,16 +122,16 @@ func New(conf *Config) (*Server, error) {
 }
 
 // ListenAndServe is used to create a listener and serve on it
-func (s *Server) ListenAndServe(network, addr string) error {
+func (s *Server) ListenAndServe(ctx context.Context, network, addr string) error {
 	l, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
-	return s.Serve(l)
+	return s.Serve(ctx, l)
 }
 
 // Serve is used to serve connections from a listener
-func (s *Server) Serve(l net.Listener) error {
+func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	// open a UDP server if specified in config
 	if s.config.BindPort > 0 {
 		ip, _, _ := net.SplitHostPort(l.Addr().String())
@@ -139,7 +153,23 @@ func (s *Server) Serve(l net.Listener) error {
 			return err
 		}
 		go func(c net.Conn) {
-			if err := s.ServeConn(c); err != nil {
+			// Create per-connection context with optional timeout and connection metadata
+			var connCtx context.Context
+			var cancel context.CancelFunc
+			
+			if s.config.ConnTimeout > 0 {
+				connCtx, cancel = context.WithTimeout(ctx, s.config.ConnTimeout)
+			} else {
+				connCtx, cancel = context.WithCancel(ctx)
+			}
+			defer cancel()
+			
+			// Add connection metadata to context
+			connCtx = context.WithValue(connCtx, ClientAddrKey, c.RemoteAddr().String())
+			connCtx = context.WithValue(connCtx, ServerAddrKey, c.LocalAddr().String())
+			connCtx = context.WithValue(connCtx, ConnTimeKey, time.Now())
+			
+			if err := s.ServeConn(connCtx, c); err != nil {
 				s.config.Logger.Printf("failed to serve connection: %v", err)
 			}
 		}(conn)
@@ -147,7 +177,7 @@ func (s *Server) Serve(l net.Listener) error {
 }
 
 // ServeConn is used to serve a single connection.
-func (s *Server) ServeConn(conn net.Conn) error {
+func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	defer func() {
 		_ = conn.Close() // Ignore close errors in defer
 	}()
@@ -190,7 +220,7 @@ func (s *Server) ServeConn(conn net.Conn) error {
 	}
 
 	// Process the client request
-	if err := s.handleRequest(request, conn); err != nil {
+	if err := s.handleRequest(ctx, request, conn); err != nil {
 		err = fmt.Errorf("failed to handle request: %v", err)
 		s.config.Logger.Printf("socks: %v", err)
 		return err

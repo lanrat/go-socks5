@@ -2,6 +2,7 @@ package socks5
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"log"
@@ -59,7 +60,7 @@ func TestSOCKS5_Connect(t *testing.T) {
 
 	// Start listening
 	go func() {
-		if err := server.ListenAndServe("tcp", "127.0.0.1:12365"); err != nil {
+		if err := server.ListenAndServe(context.Background(), "tcp", "127.0.0.1:12365"); err != nil {
 			t.Errorf("err: %v", err)
 		}
 	}()

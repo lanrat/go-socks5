@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 
 	"github.com/lanrat/go-socks5"
@@ -17,7 +18,7 @@ func main() {
 	}
 
 	// Create SOCKS5 proxy on localhost port 8000
-	if err := server.ListenAndServe("tcp", "127.0.0.1:8000"); err != nil {
+	if err := server.ListenAndServe(context.Background(), "tcp", "127.0.0.1:8000"); err != nil {
 		panic(err)
 	}
 }
