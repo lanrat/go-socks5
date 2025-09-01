@@ -1,3 +1,3 @@
-module github.com/haxii/socks5
+module github.com/lanrat/go-socks5
 
 go 1.12

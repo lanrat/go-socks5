@@ -1,4 +1,4 @@
-Socks5 [![Build Status](https://travis-ci.org/haxii/socks5.png)](https://travis-ci.org/haxii/socks5)
+Socks5
 =========
 
 Provides the `socks5` package that implements a [SOCKS5 server](http://en.wikipedia.org/wiki/SOCKS).
@@ -41,4 +41,3 @@ if err := server.ListenAndServe("tcp", "127.0.0.1:8000"); err != nil {
   panic(err)
 }
 ```
-
