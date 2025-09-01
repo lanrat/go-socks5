@@ -9,40 +9,59 @@ import (
 	"time"
 )
 
-const maxUDPPacketSize = 2 * 1024
-const udpSessionIdleTimeout = 5 * time.Minute
+// Default values for UDP configuration (used when creating buffer pools)
+const (
+	defaultUDPPacketSize     = 2 * 1024        // 2KB
+	defaultUDPSessionTimeout = 5 * time.Minute // 5 minutes
+)
 
+// udpClientSrcAddrZero is used as the default client source address for UDP connections
 var udpClientSrcAddrZero = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 
-// UDPSession represents a UDP association session
+// UDPSession represents an active UDP association session created by an ASSOCIATE command.
+// It tracks the client's context, timing information, and the original request.
 type UDPSession struct {
-	// Context from the ASSOCIATE command, with any rule modifications
+	// Context from the ASSOCIATE command, with any rule modifications applied
 	Context context.Context
-	// Client's control connection address for session identification
+	// ClientAddr is the client's control connection address for session identification
 	ClientAddr string
-	// Time when session was created
+	// CreatedAt records when this session was established
 	CreatedAt time.Time
-	// Time of last UDP packet activity
+	// LastActivity tracks the last time UDP traffic was seen for this session
 	LastActivity time.Time
-	// Request that created this session
+	// Request is the original ASSOCIATE request that created this session
 	Request *Request
 }
 
-// UDPSessionManager manages UDP sessions
+// UDPSessionManager manages active UDP sessions for SOCKS5 UDP association.
+// It provides thread-safe access to sessions and automatic cleanup of idle sessions.
 type UDPSessionManager struct {
-	mu           sync.RWMutex
-	sessions     map[string]*UDPSession // key: client address string (IP:port)
-	sessionsByIP map[string]*UDPSession // key: client IP string (for fast IP-only lookup)
-	cleanup      chan struct{}
-	cleanupOnce  sync.Once
+	// mu protects access to the session maps
+	mu sync.RWMutex
+	// sessions maps client addresses to their UDP sessions
+	sessions map[string]*UDPSession // key: client address string (IP:port)
+	// sessionsByIP provides fast lookup by IP only (for port mismatch cases)
+	sessionsByIP map[string]*UDPSession // key: client IP string
+	// cleanup signals the cleanup goroutine to stop
+	cleanup chan struct{}
+	// cleanupOnce ensures cleanup is only signaled once
+	cleanupOnce sync.Once
+	// sessionTimeout is the configurable session timeout
+	sessionTimeout time.Duration
 }
 
-// NewUDPSessionManager creates a new UDP session manager
-func NewUDPSessionManager() *UDPSessionManager {
+// NewUDPSessionManager creates and initializes a new UDP session manager.
+// It starts a background goroutine for cleaning up expired sessions.
+func NewUDPSessionManager(sessionTimeout time.Duration) *UDPSessionManager {
+	if sessionTimeout == 0 {
+		sessionTimeout = defaultUDPSessionTimeout
+	}
+
 	mgr := &UDPSessionManager{
-		sessions:     make(map[string]*UDPSession),
-		sessionsByIP: make(map[string]*UDPSession),
-		cleanup:      make(chan struct{}),
+		sessions:       make(map[string]*UDPSession),
+		sessionsByIP:   make(map[string]*UDPSession),
+		cleanup:        make(chan struct{}),
+		sessionTimeout: sessionTimeout,
 	}
 
 	// Start cleanup goroutine
@@ -51,7 +70,8 @@ func NewUDPSessionManager() *UDPSessionManager {
 	return mgr
 }
 
-// RegisterSession registers a new UDP session
+// RegisterSession creates and registers a new UDP session for the given client.
+// The session will be indexed by both full address and IP-only for flexible lookup.
 func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Context, req *Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -74,7 +94,7 @@ func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Conte
 	}
 }
 
-// GetSession retrieves a UDP session by client address
+// GetSession retrieves a UDP session by exact client address match.
 func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -83,7 +103,8 @@ func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
 	return session, exists
 }
 
-// GetSessionByIP retrieves a UDP session by client IP (without port)
+// GetSessionByIP retrieves a UDP session by client IP only, ignoring port.
+// This is useful when client port numbers change but IP remains the same.
 func (m *UDPSessionManager) GetSessionByIP(clientIP string) *UDPSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -91,7 +112,7 @@ func (m *UDPSessionManager) GetSessionByIP(clientIP string) *UDPSession {
 	return m.sessionsByIP[clientIP]
 }
 
-// UpdateActivity updates the last activity time for a session
+// UpdateActivity updates the last activity timestamp for a session by exact address.
 func (m *UDPSessionManager) UpdateActivity(clientAddr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -101,7 +122,7 @@ func (m *UDPSessionManager) UpdateActivity(clientAddr string) {
 	}
 }
 
-// UpdateActivityByIP updates the last activity time for a session by IP
+// UpdateActivityByIP updates the last activity timestamp for a session by IP only.
 func (m *UDPSessionManager) UpdateActivityByIP(clientIP string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -111,7 +132,7 @@ func (m *UDPSessionManager) UpdateActivityByIP(clientIP string) {
 	}
 }
 
-// UnregisterSession removes a UDP session
+// UnregisterSession removes a UDP session from both address indexes.
 func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -125,14 +146,15 @@ func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 	}
 }
 
-// Stop gracefully stops the session manager
+// Stop gracefully shuts down the session manager and its cleanup goroutine.
 func (m *UDPSessionManager) Stop() {
 	m.cleanupOnce.Do(func() {
 		close(m.cleanup)
 	})
 }
 
-// cleanupExpiredSessions removes expired UDP sessions
+// cleanupExpiredSessions runs in a background goroutine to remove idle sessions.
+// It checks for expired sessions every minute and removes them from both indexes.
 func (m *UDPSessionManager) cleanupExpiredSessions() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -145,7 +167,7 @@ func (m *UDPSessionManager) cleanupExpiredSessions() {
 			now := time.Now()
 			m.mu.Lock()
 			for addr, session := range m.sessions {
-				if now.Sub(session.LastActivity) > udpSessionIdleTimeout {
+				if now.Sub(session.LastActivity) > m.sessionTimeout {
 					// Remove from both indexes
 					delete(m.sessions, addr)
 					if host, _, err := net.SplitHostPort(addr); err == nil {
@@ -158,24 +180,40 @@ func (m *UDPSessionManager) cleanupExpiredSessions() {
 	}
 }
 
+// udpPacketBufferPool provides reusable buffers for UDP packet processing
 var udpPacketBufferPool = sync.Pool{
 	New: func() interface{} {
-		buf := make([]byte, maxUDPPacketSize)
+		buf := make([]byte, defaultUDPPacketSize)
 		return &buf
 	},
 }
 
-func getUDPPacketBuffer() []byte {
-	return *udpPacketBufferPool.Get().(*[]byte)
+// getUDPPacketBuffer retrieves a buffer from the pool for UDP packet processing
+// If the requested size is larger than the pool's buffer size, allocates a new buffer
+func getUDPPacketBuffer(size int) []byte {
+	if size <= defaultUDPPacketSize {
+		return *udpPacketBufferPool.Get().(*[]byte)
+	}
+	// For larger sizes, allocate directly
+	return make([]byte, size)
 }
 
+// putUDPPacketBuffer returns a buffer to the pool after use
+// Only returns buffers that match the pool's expected size
 func putUDPPacketBuffer(p []byte) {
-	p = p[:cap(p)]
-	udpPacketBufferPool.Put(&p)
+	if cap(p) == defaultUDPPacketSize {
+		p = p[:cap(p)]
+		udpPacketBufferPool.Put(&p)
+	}
+	// For non-standard sizes, let GC handle them
 }
 
-//FIXME: insecure implementation of UDP server, anyone could send package here without authentication
-
+// handleUDP processes incoming UDP packets on the server's UDP socket.
+// It reads packets, looks up associated sessions, and proxies them to destinations.
+//
+// Security note: This implementation allows UDP packets from any source.
+// In production, additional validation should be added to verify packets
+// come from clients with active ASSOCIATE sessions.
 func (s *Server) handleUDP(ctx context.Context, udpConn *net.UDPConn) {
 	for {
 		select {
@@ -184,7 +222,7 @@ func (s *Server) handleUDP(ctx context.Context, udpConn *net.UDPConn) {
 		default:
 		}
 
-		buffer := getUDPPacketBuffer()
+		buffer := getUDPPacketBuffer(s.config.UDPPacketSize)
 		n, src, err := udpConn.ReadFromUDP(buffer)
 		if err != nil {
 			select {
@@ -219,10 +257,20 @@ func (s *Server) handleUDP(ctx context.Context, udpConn *net.UDPConn) {
     +----+------+------+----------+----------+----------+
 **********************************************************/
 
-// ErrUDPFragmentNoSupported indicates that UDP fragmentation is not supported
+// ErrUDPFragmentNoSupported is returned when a UDP packet indicates fragmentation
 var ErrUDPFragmentNoSupported = errors.New("UDP fragmentation not supported")
 
+// serveUDPConn processes a single UDP packet received from a client.
+// It parses the SOCKS5 UDP header, looks up the session, resolves the destination,
+// forwards the packet, and sends the response back to the client.
 func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func([]byte) error) error {
+	// Check packet size against configured limit
+	if len(udpPacket) > s.config.UDPPacketSize {
+		err := fmt.Errorf("UDP packet too large: %d bytes exceeds configured limit of %d", len(udpPacket), s.config.UDPPacketSize)
+		s.config.Logger.Printf("udp socks: %v", err)
+		return err
+	}
+
 	// RSV  Reserved X'0000'
 	// FRAG Current fragment number, do not support fragment here
 	if len(udpPacket) < 3 {
@@ -343,7 +391,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 			targetUDPAddr.String(), err)
 		return err
 	}
-	respBuffer := getUDPPacketBuffer()
+	respBuffer := getUDPPacketBuffer(s.config.UDPPacketSize)
 	defer putUDPPacketBuffer(respBuffer)
 	copy(respBuffer[0:len(header)], header)
 	copy(respBuffer[len(header):len(header)+len(targetAddrRaw)], targetAddrRaw)

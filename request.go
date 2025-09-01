@@ -19,26 +19,23 @@ import (
     +----+-----+-------+------+----------+----------+
 *******************************************************/
 
-// CMD declaration
+// SOCKS5 command constants as defined in RFC 1928
 const (
-	// CommandConnect CMD CONNECT X'01'
+	// CommandConnect requests a TCP connection to the target (X'01')
 	CommandConnect = uint8(1)
-	// CommandBind CMD BIND X'02'. The BIND request is used in protocols
-	// which require the client to accept connections from the server.
+	// CommandBind requests the server to bind to a port for incoming connections (X'02')
 	CommandBind = uint8(2)
-	// CommandAssociate CMD UDP ASSOCIATE X'03'.  The UDP ASSOCIATE request
-	// is used to establish an association within the UDP relay process to
-	// handle UDP datagrams.
+	// CommandAssociate requests UDP association for relaying UDP datagrams (X'03')
 	CommandAssociate = uint8(3)
 )
 
-// ATYP address type of following address declaration
+// Address type constants as defined in RFC 1928
 const (
-	// AddressIPv4 IP V4 address: X'01'
+	// AddressIPv4 indicates an IPv4 address follows (X'01')
 	AddressIPv4 = uint8(1)
-	// AddressDomainName DOMAINNAME: X'03'
+	// AddressDomainName indicates a domain name follows (X'03')
 	AddressDomainName = uint8(3)
-	// AddressIPv6 IP V6 address: X'04'
+	// AddressIPv6 indicates an IPv6 address follows (X'04')
 	AddressIPv6 = uint8(4)
 )
 
@@ -52,31 +49,32 @@ const (
     +----+-----+-------+------+----------+----------+
 *******************************************************/
 
-// REP field declaration
+// Reply constants for server responses as defined in RFC 1928
 const (
-	// ReplySucceeded X'00' succeeded
+	// ReplySucceeded indicates the request was successful (X'00')
 	ReplySucceeded uint8 = iota
-	// ReplyServerFailure X'01' general SOCKS server failure
+	// ReplyServerFailure indicates a general server failure (X'01')
 	ReplyServerFailure
-	// ReplyRuleFailure X'02' connection not allowed by ruleset
+	// ReplyRuleFailure indicates the connection was blocked by rules (X'02')
 	ReplyRuleFailure
-	// ReplyNetworkUnreachable X'03' Network unreachable
+	// ReplyNetworkUnreachable indicates the network is unreachable (X'03')
 	ReplyNetworkUnreachable
-	// ReplyHostUnreachable X'04' Host unreachable
+	// ReplyHostUnreachable indicates the host is unreachable (X'04')
 	ReplyHostUnreachable
-	// ReplyConnectionRefused X'05' Connection refused
+	// ReplyConnectionRefused indicates the connection was refused (X'05')
 	ReplyConnectionRefused
-	// ReplyTTLExpired X'06' TTL expired
+	// ReplyTTLExpired indicates the TTL expired (X'06')
 	ReplyTTLExpired
-	// ReplyCommandNotSupported X'07' Command not supported
+	// ReplyCommandNotSupported indicates the command is not supported (X'07')
 	ReplyCommandNotSupported
-	// ReplyAddrTypeNotSupported X'08' Address type not supported
+	// ReplyAddrTypeNotSupported indicates the address type is not supported (X'08')
 	ReplyAddrTypeNotSupported
 )
 
+// errUnrecognizedAddrType is returned when an invalid address type is encountered
 var errUnrecognizedAddrType = fmt.Errorf("unrecognized address type")
 
-// zeroBindAddr used for TCP connect,  BND.ADDR and BND.PORT is unused
+// zeroBindAddr is used for TCP CONNECT responses where bind address is not meaningful
 var zeroBindAddr = AddrSpec{IP: net.IPv4zero, Port: 1080}
 
 // AddressRewriter is used to rewrite a destination address transparently.
@@ -91,11 +89,15 @@ type AddressRewriter interface {
 // AddrSpec represents a SOCKS5 address specification.
 // It can contain either an IP address (IPv4/IPv6) or a fully qualified domain name (FQDN).
 type AddrSpec struct {
+	// FQDN is the fully qualified domain name (empty if IP is used)
 	FQDN string
-	IP   net.IP
+	// IP is the IP address (nil if FQDN is used)
+	IP net.IP
+	// Port is the port number
 	Port int
 }
 
+// String returns a human-readable representation of the address specification.
 func (a *AddrSpec) String() string {
 	if a.FQDN != "" {
 		return fmt.Sprintf("%s (%s):%d", a.FQDN, a.IP, a.Port)
@@ -103,8 +105,7 @@ func (a *AddrSpec) String() string {
 	return fmt.Sprintf("%s:%d", a.IP, a.Port)
 }
 
-// Address returns a string suitable to dial; prefer returning IP-based
-// address, fallback to FQDN
+// Address returns a string suitable for dialing, preferring IP over FQDN.
 func (a AddrSpec) Address() string {
 	if len(a.IP) != 0 {
 		return net.JoinHostPort(a.IP.String(), strconv.Itoa(a.Port))
@@ -115,19 +116,20 @@ func (a AddrSpec) Address() string {
 // Request represents a SOCKS5 request received from a client.
 // It contains the parsed command, destination address, and authentication context.
 type Request struct {
-	// Protocol version
+	// Version is the SOCKS protocol version (should be 5)
 	Version uint8
-	// Requested command
+	// Command is the requested SOCKS command (CONNECT, BIND, ASSOCIATE)
 	Command uint8
-	// AuthContext provided during negotiation
+	// AuthContext contains authentication information from negotiation
 	AuthContext *AuthContext
-	// AddrSpec of the the network that sent the request
+	// RemoteAddr is the address of the client that sent the request
 	RemoteAddr *AddrSpec
-	// AddrSpec of the desired destination
+	// DestAddr is the desired destination address from the client
 	DestAddr *AddrSpec
-	// AddrSpec of the actual destination (might be affected by rewrite)
+	// realDestAddr is the actual destination (may be modified by rewriters)
 	realDestAddr *AddrSpec
-	bufConn      io.Reader
+	// bufConn is the buffered connection for reading additional data
+	bufConn io.Reader
 }
 
 // NewRequest parses a SOCKS5 request from the given reader.
@@ -161,7 +163,8 @@ func NewRequest(bufConn io.Reader) (*Request, error) {
 	return request, nil
 }
 
-// handleRequest is used for request processing after authentication
+// handleRequest processes a client request after authentication is complete.
+// It resolves addresses, applies rewrites, and dispatches to the appropriate command handler.
 func (s *Server) handleRequest(ctx context.Context, req *Request, conn net.Conn) error {
 	// Resolve the address if we have a FQDN
 	dest := req.DestAddr
@@ -196,7 +199,8 @@ func (s *Server) handleRequest(ctx context.Context, req *Request, conn net.Conn)
 	}
 }
 
-// handleConnect is used to handle a connect command
+// handleConnect processes a CONNECT command by establishing a TCP connection to the target.
+// It performs access control checks, connects to the destination, and proxies data bidirectionally.
 func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request) error {
 	// Check if this is allowed
 	_ctx, ok := s.config.Rules.Allow(ctx, req)
@@ -254,7 +258,8 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 	return nil
 }
 
-// handleBind is used to handle a connect command
+// handleBind processes a BIND command (currently not implemented).
+// The BIND command is used for protocols that require the client to accept incoming connections.
 func (s *Server) handleBind(ctx context.Context, conn net.Conn, req *Request) error {
 	// Check if this is allowed
 	ctx, ok := s.config.Rules.Allow(ctx, req)
@@ -273,7 +278,8 @@ func (s *Server) handleBind(ctx context.Context, conn net.Conn, req *Request) er
 	return nil
 }
 
-// handleAssociate is used to handle a connect command
+// handleAssociate processes an ASSOCIATE command for UDP proxying.
+// It registers a UDP session and waits for the control connection to close.
 func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Request) error {
 	// Check if this is allowed
 	ctx, ok := s.config.Rules.Allow(ctx, req)
@@ -330,8 +336,8 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
     +------+----------+----------+
 ************************************/
 
-// readAddrSpec is used to read AddrSpec.
-// Expects an address type byte, followed by the address and port
+// readAddrSpec reads a SOCKS5 address specification from the given reader.
+// It handles IPv4, IPv6, and domain name address types.
 func readAddrSpec(r io.Reader) (*AddrSpec, error) {
 	d := &AddrSpec{}
 
@@ -382,8 +388,8 @@ func readAddrSpec(r io.Reader) (*AddrSpec, error) {
 	return d, nil
 }
 
-// resolveDestination resolves an FQDN in an AddrSpec and updates the IP field.
-// It returns the updated context and any resolution error.
+// resolveDestination resolves a domain name to an IP address if needed.
+// If the AddrSpec contains an FQDN, it uses the configured resolver to get the IP.
 func (s *Server) resolveDestination(ctx context.Context, addr *AddrSpec) (context.Context, error) {
 	if addr.FQDN == "" {
 		return ctx, nil // No FQDN to resolve
@@ -398,7 +404,7 @@ func (s *Server) resolveDestination(ctx context.Context, addr *AddrSpec) (contex
 	return newCtx, nil
 }
 
-// sendReply is used to send a reply message
+// sendReply sends a SOCKS5 reply message with the given response code and address.
 func sendReply(w io.Writer, resp uint8, addr *AddrSpec) error {
 	// Format the address
 	var addrType uint8
@@ -444,12 +450,14 @@ func sendReply(w io.Writer, resp uint8, addr *AddrSpec) error {
 	return err
 }
 
+// closeWriter defines an interface for connections that support half-close
 type closeWriter interface {
+	// CloseWrite closes the write side of the connection
 	CloseWrite() error
 }
 
-// proxy is used to shuffle data from src to destination, and sends errors
-// down a dedicated channel. It respects context cancellation.
+// proxy copies data from src to dst in a goroutine, respecting context cancellation.
+// It sends any errors through the provided error channel and attempts graceful connection shutdown.
 func proxy(ctx context.Context, dst io.Writer, src io.Reader, errCh chan error) {
 	done := make(chan error, 1)
 

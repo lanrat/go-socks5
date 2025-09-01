@@ -15,21 +15,21 @@ import (
     +----+----------+----------+
 **********************************/
 
-// AuthMethods
+// Authentication method constants as defined in RFC 1928
 const (
-	// AuthMethodNoAuth X'00' NO AUTHENTICATION REQUIRED
+	// AuthMethodNoAuth indicates no authentication is required (X'00')
 	AuthMethodNoAuth = uint8(0)
 
 	// X'01' GSSAPI
 
-	// AuthMethodUserPass X'02' USERNAME/PASSWORD
+	// AuthMethodUserPass indicates username/password authentication (X'02')
 	AuthMethodUserPass = uint8(2)
 
 	// X'03' to X'7F' IANA ASSIGNED
 
 	// X'80' to X'FE' RESERVED FOR PRIVATE METHODS
 
-	// AuthMethodNoAcceptable X'FF' NO ACCEPTABLE METHODS
+	// AuthMethodNoAcceptable indicates no acceptable authentication methods (X'FF')
 	AuthMethodNoAcceptable = uint8(255)
 )
 
@@ -51,49 +51,49 @@ const (
 ************************************************/
 
 const (
-	// AuthUserPassVersion the VER field contains the current version
-	// of the sub-negotiation, which is X'01'
+	// AuthUserPassVersion is the version field for username/password sub-negotiation (X'01')
 	AuthUserPassVersion = uint8(1)
-	// AuthUserPassStatusSuccess a STATUS field of X'00' indicates success
+	// AuthUserPassStatusSuccess indicates successful username/password authentication (X'00')
 	AuthUserPassStatusSuccess = uint8(0)
-	// AuthUserPassStatusFailure if the server returns a `failure'
-	// (STATUS value other than X'00') status, it MUST close the connection.
+	// AuthUserPassStatusFailure indicates failed username/password authentication (X'01')
 	AuthUserPassStatusFailure = uint8(1)
 )
 
 var (
-	// ErrUserAuthFailed failed to authenticate
+	// ErrUserAuthFailed is returned when username/password authentication fails
 	ErrUserAuthFailed = fmt.Errorf("user authentication failed")
-	// ErrNoSupportedAuth authenticate method not supported
+	// ErrNoSupportedAuth is returned when no mutually supported authentication method exists
 	ErrNoSupportedAuth = fmt.Errorf("no supported authentication mechanism")
 )
 
-// AuthContext A Request encapsulates authentication state provided
-// during negotiation
+// AuthContext encapsulates authentication state provided during negotiation.
+// It contains the authentication method used and any associated payload data.
 type AuthContext struct {
-	// Provided auth method
+	// Method is the authentication method code that was used
 	Method uint8
-	// Payload provided during negotiation.
-	// Keys depend on the used auth method.
-	// For UserPassAuth contains Username
+	// Payload contains method-specific authentication data.
+	// For UserPassAuth, contains "Username" key with the authenticated username.
 	Payload map[string]string
 }
 
-// Authenticator auth
+// Authenticator defines the interface for SOCKS5 authentication methods.
+// Implementations handle the authentication negotiation for specific methods.
 type Authenticator interface {
+	// Authenticate performs the authentication handshake with the client
 	Authenticate(reader io.Reader, writer io.Writer) (*AuthContext, error)
+	// GetCode returns the authentication method code for this authenticator
 	GetCode() uint8
 }
 
 // NoAuthAuthenticator is used to handle the "No Authentication" mode
 type NoAuthAuthenticator struct{}
 
-// GetCode implementation of Authenticator
+// GetCode returns the authentication method code for no authentication.
 func (a NoAuthAuthenticator) GetCode() uint8 {
 	return AuthMethodNoAuth
 }
 
-// Authenticate implementation of Authenticator
+// Authenticate performs the no-auth handshake by simply confirming the method.
 func (a NoAuthAuthenticator) Authenticate(reader io.Reader, writer io.Writer) (*AuthContext, error) {
 	_, err := writer.Write([]byte{socks5Version, AuthMethodNoAuth})
 	return &AuthContext{AuthMethodNoAuth, nil}, err
@@ -105,12 +105,13 @@ type UserPassAuthenticator struct {
 	Credentials CredentialStore
 }
 
-// GetCode implementation of Authenticator
+// GetCode returns the authentication method code for username/password authentication.
 func (a UserPassAuthenticator) GetCode() uint8 {
 	return AuthMethodUserPass
 }
 
-// Authenticate implementation of Authenticator
+// Authenticate performs username/password authentication as per RFC 1929.
+// It reads the username and password from the client and validates them using the credential store.
 func (a UserPassAuthenticator) Authenticate(reader io.Reader, writer io.Writer) (*AuthContext, error) {
 	// Tell the client to use user/pass auth
 	if _, err := writer.Write([]byte{socks5Version, AuthMethodUserPass}); err != nil {
@@ -164,6 +165,8 @@ func (a UserPassAuthenticator) Authenticate(reader io.Reader, writer io.Writer) 
 }
 
 // authenticate is used to handle connection authentication
+// authenticate handles the SOCKS5 authentication negotiation phase.
+// It reads the client's supported authentication methods and selects a compatible one.
 func (s *Server) authenticate(conn io.Writer, bufConn io.Reader) (*AuthContext, error) {
 	// Get the methods
 	methods, err := readMethods(bufConn)
@@ -185,6 +188,8 @@ func (s *Server) authenticate(conn io.Writer, bufConn io.Reader) (*AuthContext, 
 
 // noAcceptableAuth is used to handle when we have no eligible
 // authentication mechanism
+// noAcceptableAuth sends a "no acceptable authentication methods" response
+// to the client and returns an appropriate error.
 func noAcceptableAuth(conn io.Writer) error {
 	if _, err := conn.Write([]byte{socks5Version, AuthMethodNoAcceptable}); err != nil {
 		return err
@@ -194,6 +199,8 @@ func noAcceptableAuth(conn io.Writer) error {
 
 // readMethods is used to read the number of methods
 // and proceeding auth methods
+// readMethods reads the client's list of supported authentication methods
+// from the initial SOCKS5 negotiation packet.
 func readMethods(r io.Reader) ([]byte, error) {
 	header := []byte{0}
 	if _, err := r.Read(header); err != nil {

@@ -1,3 +1,31 @@
+// Package socks5 provides a complete implementation of a SOCKS5 server as defined in RFC 1928.
+//
+// This package includes support for:
+//   - TCP CONNECT command for proxying TCP connections
+//   - UDP ASSOCIATE command for proxying UDP datagrams
+//   - Multiple authentication methods (no auth, username/password)
+//   - Configurable address resolution and connection handling
+//   - Rule-based access control
+//   - Address rewriting capabilities
+//   - Graceful server shutdown
+//   - Connection timeouts and context-based cancellation
+//
+// The server is designed to be flexible and extensible, allowing custom implementations
+// of authentication, name resolution, access rules, and address rewriting.
+//
+// Basic usage:
+//
+//	config := &socks5.Config{}
+//	server, err := socks5.New(config)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//
+//	if err := server.ListenAndServe(context.Background(), ":1080"); err != nil {
+//		log.Fatal(err)
+//	}
+//
+// For more advanced configurations, see the Config struct and its various interface types.
 package socks5
 
 import (
@@ -12,16 +40,20 @@ import (
 )
 
 const (
+	// socks5Version defines the SOCKS protocol version (5) as per RFC 1928
 	socks5Version = uint8(5)
 )
 
-// Context keys for connection metadata
+// contextKey is used as a type for context keys to avoid key collisions
 type contextKey string
 
 const (
+	// ClientAddrKey is the context key for storing the client's remote address
 	ClientAddrKey contextKey = "client_addr"
+	// ServerAddrKey is the context key for storing the server's local address
 	ServerAddrKey contextKey = "server_addr"
-	ConnTimeKey   contextKey = "conn_time"
+	// ConnTimeKey is the context key for storing the connection start time
+	ConnTimeKey contextKey = "conn_time"
 )
 
 // ErrorLogger is an error handler interface compatible with the standard library logger.
@@ -79,6 +111,14 @@ type Config struct {
 	// DialUDP is an optional function for making outbound UDP connections.
 	// If nil, net.DialUDP is used with a zero source address.
 	DialUDP func(ctx context.Context, network string, udpClientSrcAddr, targetUDPAddr *net.UDPAddr) (net.Conn, error)
+
+	// UDPPacketSize sets the maximum size for UDP packets.
+	// If zero, defaults to 2048 bytes.
+	UDPPacketSize int
+
+	// UDPSessionTimeout sets how long UDP sessions remain active without traffic.
+	// If zero, defaults to 5 minutes.
+	UDPSessionTimeout time.Duration
 }
 
 // Server is responsible for accepting connections and handling the details of the SOCKS5 protocol.
@@ -129,9 +169,19 @@ func New(conf *Config) (*Server, error) {
 		conf.BindIP = net.ParseIP("127.0.0.1")
 	}
 
+	// Set default UDP packet size if not provided
+	if conf.UDPPacketSize == 0 {
+		conf.UDPPacketSize = 2048 // 2KB default
+	}
+
+	// Set default UDP session timeout if not provided
+	if conf.UDPSessionTimeout == 0 {
+		conf.UDPSessionTimeout = 5 * time.Minute // 5 minutes default
+	}
+
 	server := &Server{
 		config:        conf,
-		udpSessionMgr: NewUDPSessionManager(),
+		udpSessionMgr: NewUDPSessionManager(conf.UDPSessionTimeout),
 		shutdown:      make(chan struct{}),
 	}
 
