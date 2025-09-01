@@ -136,13 +136,19 @@ func (s *Server) Serve(l net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go s.ServeConn(conn)
+		go func(c net.Conn) {
+			if err := s.ServeConn(c); err != nil {
+				s.config.Logger.Printf("failed to serve connection: %v", err)
+			}
+		}(conn)
 	}
 }
 
 // ServeConn is used to serve a single connection.
 func (s *Server) ServeConn(conn net.Conn) error {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close() // Ignore close errors in defer
+	}()
 	bufConn := bufio.NewReader(conn)
 
 	// Read the version byte

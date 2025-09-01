@@ -103,7 +103,7 @@ func (a *AddrSpec) String() string {
 // Address returns a string suitable to dial; prefer returning IP-based
 // address, fallback to FQDN
 func (a AddrSpec) Address() string {
-	if 0 != len(a.IP) {
+	if len(a.IP) != 0 {
 		return net.JoinHostPort(a.IP.String(), strconv.Itoa(a.Port))
 	}
 	return net.JoinHostPort(a.FQDN, strconv.Itoa(a.Port))
@@ -228,7 +228,9 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 		}
 		return fmt.Errorf("connect to %v failed: %v", req.DestAddr, err)
 	}
-	defer target.Close()
+	defer func() {
+		_ = target.Close() // Ignore close errors in defer
+	}()
 
 	// Send success
 	if err := sendReply(conn, ReplySucceeded, &zeroBindAddr); err != nil {
@@ -254,14 +256,14 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 // handleBind is used to handle a connect command
 func (s *Server) handleBind(ctx context.Context, conn net.Conn, req *Request) error {
 	// Check if this is allowed
-	_ctx, ok := s.config.Rules.Allow(ctx, req)
+	ctx, ok := s.config.Rules.Allow(ctx, req)
 	if !ok {
 		if err := sendReply(conn, ReplyRuleFailure, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
 		return fmt.Errorf("bind to %v blocked by rules", req.DestAddr)
 	}
-	ctx = _ctx
+	_ = ctx // TODO: Use this context when BIND is implemented
 
 	// TODO: Support bind
 	if err := sendReply(conn, ReplyCommandNotSupported, nil); err != nil {
@@ -273,14 +275,14 @@ func (s *Server) handleBind(ctx context.Context, conn net.Conn, req *Request) er
 // handleAssociate is used to handle a connect command
 func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Request) error {
 	// Check if this is allowed
-	_ctx, ok := s.config.Rules.Allow(ctx, req)
+	ctx, ok := s.config.Rules.Allow(ctx, req)
 	if !ok {
 		if err := sendReply(conn, ReplyRuleFailure, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
 		return fmt.Errorf("associate to %v blocked by rules", req.DestAddr)
 	}
-	ctx = _ctx
+	_ = ctx // TODO: Context ready for future UDP operations
 
 	// check bindIP 1st
 	if len(s.config.BindIP) == 0 || s.config.BindIP.IsUnspecified() {
@@ -297,12 +299,17 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 	// check every 10 secs
 	tmp := []byte{}
 	var neverTimeout time.Time
+	var err error
 	for {
-		conn.SetReadDeadline(time.Now())
-		if _, err := conn.Read(tmp); err == io.EOF {
+		if err = conn.SetReadDeadline(time.Now()); err != nil {
+			return fmt.Errorf("failed to set read deadline: %v", err)
+		}
+		if _, err = conn.Read(tmp); err == io.EOF {
 			break
 		} else {
-			conn.SetReadDeadline(neverTimeout)
+			if err = conn.SetReadDeadline(neverTimeout); err != nil {
+				return fmt.Errorf("failed to clear read deadline: %v", err)
+			}
 		}
 		time.Sleep(10 * time.Second)
 	}
@@ -427,7 +434,7 @@ type closeWriter interface {
 func proxy(dst io.Writer, src io.Reader, errCh chan error) {
 	_, err := io.Copy(dst, src)
 	if tcpConn, ok := dst.(closeWriter); ok {
-		tcpConn.CloseWrite()
+		_ = tcpConn.CloseWrite() // Ignore close errors in proxy cleanup
 	}
 	errCh <- err
 }

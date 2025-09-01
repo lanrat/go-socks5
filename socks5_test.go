@@ -20,19 +20,26 @@ func TestSOCKS5_Connect(t *testing.T) {
 	go func() {
 		conn, err := l.Accept()
 		if err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close() // Ignore close errors in test cleanup
+		}()
 
 		buf := make([]byte, 4)
 		if _, err := io.ReadAtLeast(conn, buf, 4); err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
 
 		if !bytes.Equal(buf, []byte("ping")) {
-			t.Fatalf("bad: %v", buf)
+			t.Errorf("bad: %v", buf)
+			return
 		}
-		conn.Write([]byte("pong"))
+		if _, err := conn.Write([]byte("pong")); err != nil {
+			t.Errorf("failed to write pong: %v", err)
+		}
 	}()
 	lAddr := l.Addr().(*net.TCPAddr)
 
@@ -53,7 +60,7 @@ func TestSOCKS5_Connect(t *testing.T) {
 	// Start listening
 	go func() {
 		if err := serv.ListenAndServe("tcp", "127.0.0.1:12365"); err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
 		}
 	}()
 	time.Sleep(10 * time.Millisecond)
@@ -79,7 +86,9 @@ func TestSOCKS5_Connect(t *testing.T) {
 	req.Write([]byte("ping"))
 
 	// Send all the bytes
-	conn.Write(req.Bytes())
+	if _, err := conn.Write(req.Bytes()); err != nil {
+		t.Fatalf("failed to write request: %v", err)
+	}
 
 	// Verify response
 	expected := []byte{
@@ -95,7 +104,9 @@ func TestSOCKS5_Connect(t *testing.T) {
 	}
 	out := make([]byte, len(expected))
 
-	conn.SetDeadline(time.Now().Add(time.Second))
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("failed to set deadline: %v", err)
+	}
 	if _, err := io.ReadAtLeast(conn, out, len(out)); err != nil {
 		t.Fatalf("err: %v", err)
 	}

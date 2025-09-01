@@ -40,19 +40,28 @@ func TestRequest_Connect(t *testing.T) {
 	go func() {
 		conn, err := l.Accept()
 		if err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
-		defer conn.Close()
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Errorf("failed to close connection: %v", err)
+			}
+		}()
 
 		buf := make([]byte, 4)
 		if _, err := io.ReadAtLeast(conn, buf, 4); err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
 
 		if !bytes.Equal(buf, []byte("ping")) {
-			t.Fatalf("bad: %v", buf)
+			t.Errorf("bad: %v", buf)
+			return
 		}
-		conn.Write([]byte("pong"))
+		if _, err := conn.Write([]byte("pong")); err != nil {
+			t.Errorf("failed to write pong: %v", err)
+		}
 	}()
 	lAddr := l.Addr().(*net.TCPAddr)
 
@@ -115,19 +124,28 @@ func TestRequest_Connect_RuleFail(t *testing.T) {
 	go func() {
 		conn, err := l.Accept()
 		if err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
-		defer conn.Close()
+		defer func() {
+			if err := conn.Close(); err != nil {
+				t.Errorf("failed to close connection: %v", err)
+			}
+		}()
 
 		buf := make([]byte, 4)
 		if _, err := io.ReadAtLeast(conn, buf, 4); err != nil {
-			t.Fatalf("err: %v", err)
+			t.Errorf("err: %v", err)
+			return
 		}
 
 		if !bytes.Equal(buf, []byte("ping")) {
-			t.Fatalf("bad: %v", buf)
+			t.Errorf("bad: %v", buf)
+			return
 		}
-		conn.Write([]byte("pong"))
+		if _, err := conn.Write([]byte("pong")); err != nil {
+			t.Errorf("failed to write pong: %v", err)
+		}
 	}()
 	lAddr := l.Addr().(*net.TCPAddr)
 

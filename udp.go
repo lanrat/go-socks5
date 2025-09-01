@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -13,7 +14,7 @@ var udpClientSrcAddrZero = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 
 var udpPacketBufferPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, maxUDPPacketSize, maxUDPPacketSize)
+		return make([]byte, maxUDPPacketSize)
 	},
 }
 
@@ -23,7 +24,7 @@ func getUDPPacketBuffer() []byte {
 
 func putUDPPacketBuffer(p []byte) {
 	p = p[:cap(p)]
-	udpPacketBufferPool.Put(p)
+	udpPacketBufferPool.Put(&p)
 }
 
 //FIXME: insecure implementation of UDP server, anyone could send package here without authentication
@@ -38,10 +39,12 @@ func (s *Server) handleUDP(udpConn *net.UDPConn) {
 		buffer = buffer[:n]
 		go func() {
 			defer putUDPPacketBuffer(buffer)
-			s.serveUDPConn(buffer, src, func(data []byte) error {
+			if err := s.serveUDPConn(buffer, src, func(data []byte) error {
 				_, err := udpConn.WriteToUDP(data, src)
 				return err
-			})
+			}); err != nil {
+				s.config.Logger.Printf("failed to serve UDP connection: %v", err)
+			}
 		}()
 	}
 }
@@ -117,7 +120,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 
 	// resolve addr.
 	if targetAddrSpec.FQDN != "" {
-		_, addr, err := s.config.Resolver.Resolve(nil, targetAddrSpec.FQDN)
+		_, addr, err := s.config.Resolver.Resolve(context.TODO(), targetAddrSpec.FQDN)
 		if err != nil {
 			err := fmt.Errorf("failed to resolve destination '%v': %v", targetAddrSpec.FQDN, err)
 			s.config.Logger.Printf("udp socks: %+v", err)
@@ -152,7 +155,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	var isEConn bool
 	defer func() {
 		if !isEConn {
-			target.Close()
+			_ = target.Close() // Ignore close errors in defer cleanup
 		}
 	}()
 
@@ -178,7 +181,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	}
 	respBuffer = respBuffer[:len(header)+len(targetAddrRaw)+n]
 
-	if reply(respBuffer); err != nil {
+	if err := reply(respBuffer); err != nil {
 		s.config.Logger.Printf("udp socks: fail to send udp resp back: %+v", err)
 		return err
 	}

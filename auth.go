@@ -63,9 +63,9 @@ const (
 
 var (
 	// ErrUserAuthFailed failed to authenticate
-	ErrUserAuthFailed = fmt.Errorf("User authentication failed")
+	ErrUserAuthFailed = fmt.Errorf("user authentication failed")
 	// ErrNoSupportedAuth authenticate method not supported
-	ErrNoSupportedAuth = fmt.Errorf("No supported authentication mechanism")
+	ErrNoSupportedAuth = fmt.Errorf("no supported authentication mechanism")
 )
 
 // AuthContext A Request encapsulates authentication state provided
@@ -186,7 +186,9 @@ func (s *Server) authenticate(conn io.Writer, bufConn io.Reader) (*AuthContext, 
 // noAcceptableAuth is used to handle when we have no eligible
 // authentication mechanism
 func noAcceptableAuth(conn io.Writer) error {
-	conn.Write([]byte{socks5Version, AuthMethodNoAcceptable})
+	if _, err := conn.Write([]byte{socks5Version, AuthMethodNoAcceptable}); err != nil {
+		return err
+	}
 	return ErrNoSupportedAuth
 }
 
