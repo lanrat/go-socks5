@@ -108,17 +108,18 @@ func (m *UDPSessionManager) cleanupExpiredSessions() {
 
 var udpPacketBufferPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, maxUDPPacketSize)
+		buf := make([]byte, maxUDPPacketSize)
+		return &buf
 	},
 }
 
 func getUDPPacketBuffer() []byte {
-	return udpPacketBufferPool.Get().([]byte)
+	return *udpPacketBufferPool.Get().(*[]byte)
 }
 
 func putUDPPacketBuffer(p []byte) {
 	p = p[:cap(p)]
-	udpPacketBufferPool.Put(p)
+	udpPacketBufferPool.Put(&p)
 }
 
 //FIXME: insecure implementation of UDP server, anyone could send package here without authentication
@@ -166,14 +167,14 @@ func (s *Server) handleUDP(ctx context.Context, udpConn *net.UDPConn) {
     +----+------+------+----------+----------+----------+
 **********************************************************/
 
-// ErrUDPFragmentNoSupported UDP fragments not supported error
-var ErrUDPFragmentNoSupported = errors.New("")
+// ErrUDPFragmentNoSupported indicates that UDP fragmentation is not supported
+var ErrUDPFragmentNoSupported = errors.New("UDP fragmentation not supported")
 
 func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func([]byte) error) error {
 	// RSV  Reserved X'0000'
 	// FRAG Current fragment number, do not support fragment here
 	if len(udpPacket) < 3 {
-		err := fmt.Errorf("short UDP package header, %d bytes only", len(udpPacket))
+		err := fmt.Errorf("failed to parse UDP header: packet too short (%d bytes)", len(udpPacket))
 		s.config.Logger.Printf("udp socks: Failed to get UDP package header: %v", err)
 		return err
 	}
@@ -181,7 +182,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	// Read header from the actual packet
 	header := udpPacket[:3]
 	if header[0] != 0x00 || header[1] != 0x00 {
-		err := fmt.Errorf("unsupported socks UDP package header, %+v", header[:2])
+		err := fmt.Errorf("failed to parse UDP header: unsupported header values %+v", header[:2])
 		s.config.Logger.Printf("udp socks: Failed to parse UDP package header: %v", err)
 		return err
 	}
@@ -195,7 +196,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	targetAddrSpec := &AddrSpec{}
 	targetAddrRawSize := 0
 	errShortAddrRaw := func() error {
-		err := fmt.Errorf("short UDP package Addr. header, %d bytes only", len(targetAddrRaw))
+		err := fmt.Errorf("failed to parse UDP address: packet too short (%d bytes)", len(targetAddrRaw))
 		s.config.Logger.Printf("udp socks: Failed to get UDP package header: %v", err)
 		return err
 	}
@@ -238,20 +239,16 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	}
 
 	// resolve addr.
-	if targetAddrSpec.FQDN != "" {
-		_, addr, err := s.config.Resolver.Resolve(ctx, targetAddrSpec.FQDN)
-		if err != nil {
-			err := fmt.Errorf("failed to resolve destination '%v': %v", targetAddrSpec.FQDN, err)
-			s.config.Logger.Printf("udp socks: %+v", err)
-			return err
-		}
-		targetAddrSpec.IP = addr
+	_, err := s.resolveDestination(ctx, targetAddrSpec)
+	if err != nil {
+		s.config.Logger.Printf("udp socks: %+v", err)
+		return err
 	}
 
 	// make a writer and write to dst
 	targetUDPAddr, err := net.ResolveUDPAddr("udp", targetAddrSpec.Address())
 	if err != nil {
-		err := fmt.Errorf("failed to resolve destination UDP Addr '%v': %v", targetAddrSpec.Address(), err)
+		err := fmt.Errorf("failed to resolve UDP address '%v': %v", targetAddrSpec.Address(), err)
 		return err
 	}
 
@@ -266,7 +263,7 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 
 	target, err := dialUDP(ctx, "udp", udpClientSrcAddr, targetUDPAddr)
 	if err != nil {
-		err = fmt.Errorf("connect to %v failed: %v", targetUDPAddr, err)
+		err = fmt.Errorf("failed to connect to %v: %v", targetUDPAddr, err)
 		s.config.Logger.Printf("udp socks: %+v\n", err)
 		return err
 	}

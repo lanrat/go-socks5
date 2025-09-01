@@ -165,17 +165,14 @@ func NewRequest(bufConn io.Reader) (*Request, error) {
 func (s *Server) handleRequest(ctx context.Context, req *Request, conn net.Conn) error {
 	// Resolve the address if we have a FQDN
 	dest := req.DestAddr
-	if dest.FQDN != "" {
-		_ctx, addr, err := s.config.Resolver.Resolve(ctx, dest.FQDN)
-		if err != nil {
-			if err := sendReply(conn, ReplyHostUnreachable, nil); err != nil {
-				return fmt.Errorf("failed to send reply: %v", err)
-			}
-			return fmt.Errorf("failed to resolve destination '%v': %v", dest.FQDN, err)
+	newCtx, err := s.resolveDestination(ctx, dest)
+	if err != nil {
+		if err := sendReply(conn, ReplyHostUnreachable, nil); err != nil {
+			return fmt.Errorf("failed to send reply: %v", err)
 		}
-		ctx = _ctx
-		dest.IP = addr
+		return err
 	}
+	ctx = newCtx
 
 	// Apply any address rewrites
 	req.realDestAddr = req.DestAddr
@@ -207,7 +204,7 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 		if err := sendReply(conn, ReplyRuleFailure, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
-		return fmt.Errorf("connect to %v blocked by rules", req.DestAddr)
+		return fmt.Errorf("failed to connect to %v: blocked by rules", req.DestAddr)
 	}
 	ctx = _ctx
 
@@ -230,7 +227,7 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 		if err := sendReply(conn, resp, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
-		return fmt.Errorf("connect to %v failed: %v", req.DestAddr, err)
+		return fmt.Errorf("failed to connect to %v: %v", req.DestAddr, err)
 	}
 	defer func() {
 		_ = target.Close() // Ignore close errors in defer
@@ -265,7 +262,7 @@ func (s *Server) handleBind(ctx context.Context, conn net.Conn, req *Request) er
 		if err := sendReply(conn, ReplyRuleFailure, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
-		return fmt.Errorf("bind to %v blocked by rules", req.DestAddr)
+		return fmt.Errorf("failed to bind to %v: blocked by rules", req.DestAddr)
 	}
 	_ = ctx // TODO: Use this context when BIND is implemented
 
@@ -284,7 +281,7 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 		if err := sendReply(conn, ReplyRuleFailure, nil); err != nil {
 			return fmt.Errorf("failed to send reply: %v", err)
 		}
-		return fmt.Errorf("associate to %v blocked by rules", req.DestAddr)
+		return fmt.Errorf("failed to associate with %v: blocked by rules", req.DestAddr)
 	}
 
 	// Use the configured bind IP (guaranteed to be set during server creation)
@@ -383,6 +380,22 @@ func readAddrSpec(r io.Reader) (*AddrSpec, error) {
 	d.Port = (int(port[0]) << 8) | int(port[1])
 
 	return d, nil
+}
+
+// resolveDestination resolves an FQDN in an AddrSpec and updates the IP field.
+// It returns the updated context and any resolution error.
+func (s *Server) resolveDestination(ctx context.Context, addr *AddrSpec) (context.Context, error) {
+	if addr.FQDN == "" {
+		return ctx, nil // No FQDN to resolve
+	}
+
+	newCtx, ip, err := s.config.Resolver.Resolve(ctx, addr.FQDN)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to resolve destination '%v': %v", addr.FQDN, err)
+	}
+
+	addr.IP = ip
+	return newCtx, nil
 }
 
 // sendReply is used to send a reply message
