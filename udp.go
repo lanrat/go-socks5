@@ -10,6 +10,7 @@ import (
 )
 
 const maxUDPPacketSize = 2 * 1024
+const udpSessionIdleTimeout = 5 * time.Minute
 
 var udpClientSrcAddrZero = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 
@@ -21,6 +22,8 @@ type UDPSession struct {
 	ClientAddr string
 	// Time when session was created
 	CreatedAt time.Time
+	// Time of last UDP packet activity
+	LastActivity time.Time
 	// Request that created this session
 	Request *Request
 }
@@ -53,16 +56,18 @@ func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Conte
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := time.Now()
 	session := &UDPSession{
-		Context:    ctx,
-		ClientAddr: clientAddr,
-		CreatedAt:  time.Now(),
-		Request:    req,
+		Context:      ctx,
+		ClientAddr:   clientAddr,
+		CreatedAt:    now,
+		LastActivity: now,
+		Request:      req,
 	}
 
 	// Store in both indexes
 	m.sessions[clientAddr] = session
-	
+
 	// Extract IP for IP-only index
 	if host, _, err := net.SplitHostPort(clientAddr); err == nil {
 		m.sessionsByIP[host] = session
@@ -86,6 +91,26 @@ func (m *UDPSessionManager) GetSessionByIP(clientIP string) *UDPSession {
 	return m.sessionsByIP[clientIP]
 }
 
+// UpdateActivity updates the last activity time for a session
+func (m *UDPSessionManager) UpdateActivity(clientAddr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if session, exists := m.sessions[clientAddr]; exists {
+		session.LastActivity = time.Now()
+	}
+}
+
+// UpdateActivityByIP updates the last activity time for a session by IP
+func (m *UDPSessionManager) UpdateActivityByIP(clientIP string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if session := m.sessionsByIP[clientIP]; session != nil {
+		session.LastActivity = time.Now()
+	}
+}
+
 // UnregisterSession removes a UDP session
 func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 	m.mu.Lock()
@@ -93,7 +118,7 @@ func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 
 	// Remove from both indexes
 	delete(m.sessions, clientAddr)
-	
+
 	// Extract IP and remove from IP index
 	if host, _, err := net.SplitHostPort(clientAddr); err == nil {
 		delete(m.sessionsByIP, host)
@@ -109,7 +134,6 @@ func (m *UDPSessionManager) Stop() {
 
 // cleanupExpiredSessions removes expired UDP sessions
 func (m *UDPSessionManager) cleanupExpiredSessions() {
-	const sessionTimeout = 5 * time.Minute
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -121,7 +145,7 @@ func (m *UDPSessionManager) cleanupExpiredSessions() {
 			now := time.Now()
 			m.mu.Lock()
 			for addr, session := range m.sessions {
-				if now.Sub(session.CreatedAt) > sessionTimeout {
+				if now.Sub(session.LastActivity) > udpSessionIdleTimeout {
 					// Remove from both indexes
 					delete(m.sessions, addr)
 					if host, _, err := net.SplitHostPort(addr); err == nil {
@@ -261,11 +285,15 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	ctx := context.Background()
 	if session, exists := s.udpSessionMgr.GetSession(srcAddr.String()); exists {
 		ctx = session.Context
+		// Update activity timestamp for exact match
+		s.udpSessionMgr.UpdateActivity(srcAddr.String())
 	} else {
 		// Try to find session by IP only (fallback for port mismatch)
 		srcIP := srcAddr.IP.String()
 		if ipSession := s.udpSessionMgr.GetSessionByIP(srcIP); ipSession != nil {
 			ctx = ipSession.Context
+			// Update activity timestamp for IP match
+			s.udpSessionMgr.UpdateActivityByIP(srcIP)
 		} else {
 			// Only log error if no session found by IP either
 			s.config.Logger.Printf("udp socks: UDP packet from %v has no associated session", srcAddr)
