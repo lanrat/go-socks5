@@ -247,10 +247,10 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		select {
 		case <-ctx.Done():
 			// Context cancelled, close listener to unblock Accept()
-			l.Close()
+			_ = l.Close()
 		case <-s.shutdown:
 			// Server shutdown was called, close listener
-			l.Close()
+			_ = l.Close()
 		}
 	}()
 

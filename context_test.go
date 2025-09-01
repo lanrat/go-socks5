@@ -20,7 +20,7 @@ func TestServer_ContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Create a context that will be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,7 +61,7 @@ func TestServer_ContextTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Create a context with a short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
