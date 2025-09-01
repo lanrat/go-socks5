@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -23,12 +24,15 @@ const (
 	ConnTimeKey   contextKey = "conn_time"
 )
 
-// ErrorLogger error handler, compatible with std logger
+// ErrorLogger is an error handler interface compatible with the standard library logger.
+// It is used by the SOCKS5 server to log errors and diagnostic information.
 type ErrorLogger interface {
+	// Printf formats and prints a log message similar to fmt.Printf
 	Printf(format string, v ...interface{})
 }
 
-// Config is used to setup and configure a Server
+// Config is used to setup and configure a SOCKS5 Server.
+// It provides options for authentication, networking, logging, and connection handling.
 type Config struct {
 	// AuthMethods can be provided to implement custom authentication
 	// By default, "auth-less" mode is enabled.
@@ -56,7 +60,8 @@ type Config struct {
 	// BindIP is used for bind or udp associate
 	BindIP net.IP
 
-	// BindIP is used for bind or udp associate
+	// BindPort is the port used for bind or UDP associate operations.
+	// If set to 0, UDP support is disabled.
 	BindPort int
 
 	// Logger can be used to provide a custom log target.
@@ -67,21 +72,33 @@ type Config struct {
 	// If zero (default), connections have no timeout.
 	ConnTimeout time.Duration
 
-	// Optional function for dialing out
+	// Dial is an optional function for making outbound TCP connections.
+	// If nil, net.Dial is used.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
+	// DialUDP is an optional function for making outbound UDP connections.
+	// If nil, net.DialUDP is used with a zero source address.
 	DialUDP func(ctx context.Context, network string, udpClientSrcAddr, targetUDPAddr *net.UDPAddr) (net.Conn, error)
 }
 
-// Server is responsible for accepting connections and handling
-// the details of the SOCKS5 protocol
+// Server is responsible for accepting connections and handling the details of the SOCKS5 protocol.
+// It supports TCP CONNECT, UDP ASSOCIATE commands, and provides graceful shutdown capabilities.
 type Server struct {
-	config         *Config
-	authMethods    map[uint8]Authenticator
-	udpSessionMgr  *UDPSessionManager
+	config        *Config
+	authMethods   map[uint8]Authenticator
+	udpSessionMgr *UDPSessionManager
+
+	// Shutdown coordination
+	mu           sync.RWMutex
+	listeners    []net.Listener
+	udpConns     []net.PacketConn
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
 }
 
-// New creates a new Server and potentially returns an error
+// New creates a new SOCKS5 server with the given configuration.
+// It validates the configuration and sets up default values for any missing required fields.
+// Returns an error if the configuration is invalid.
 func New(conf *Config) (*Server, error) {
 	// Ensure we have at least one authentication method enabled
 	if len(conf.AuthMethods) == 0 {
@@ -107,9 +124,15 @@ func New(conf *Config) (*Server, error) {
 		conf.Logger = log.New(os.Stdout, "", log.LstdFlags)
 	}
 
+	// Ensure we have a bind IP (set default if not provided)
+	if len(conf.BindIP) == 0 || conf.BindIP.IsUnspecified() {
+		conf.BindIP = net.ParseIP("127.0.0.1")
+	}
+
 	server := &Server{
 		config:        conf,
 		udpSessionMgr: NewUDPSessionManager(),
+		shutdown:      make(chan struct{}),
 	}
 
 	server.authMethods = make(map[uint8]Authenticator)
@@ -121,7 +144,37 @@ func New(conf *Config) (*Server, error) {
 	return server, nil
 }
 
-// ListenAndServe is used to create a listener and serve on it
+// Shutdown gracefully shuts down the server without interrupting any active connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.shutdownOnce.Do(func() {
+		close(s.shutdown)
+	})
+
+	// Stop UDP session manager
+	s.udpSessionMgr.Stop()
+
+	// Close all listeners
+	s.mu.Lock()
+	for _, listener := range s.listeners {
+		_ = listener.Close()
+	}
+	for _, conn := range s.udpConns {
+		_ = conn.Close()
+	}
+	s.mu.Unlock()
+
+	// Wait for context cancellation or return immediately
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// ListenAndServe creates a network listener on the given address and serves SOCKS5 connections.
+// It blocks until the context is cancelled or an error occurs.
+// The network parameter should be "tcp", "tcp4", or "tcp6".
 func (s *Server) ListenAndServe(ctx context.Context, network, addr string) error {
 	l, err := net.Listen(network, addr)
 	if err != nil {
@@ -130,8 +183,15 @@ func (s *Server) ListenAndServe(ctx context.Context, network, addr string) error
 	return s.Serve(ctx, l)
 }
 
-// Serve is used to serve connections from a listener
+// Serve accepts incoming connections from a listener and handles SOCKS5 protocol negotiations.
+// It starts a UDP server if BindPort is configured, and spawns a goroutine for each TCP connection.
+// This method blocks until the context is cancelled or an error occurs.
 func (s *Server) Serve(ctx context.Context, l net.Listener) error {
+	// Track this listener for graceful shutdown
+	s.mu.Lock()
+	s.listeners = append(s.listeners, l)
+	s.mu.Unlock()
+
 	// open a UDP server if specified in config
 	if s.config.BindPort > 0 {
 		ip, _, _ := net.SplitHostPort(l.Addr().String())
@@ -144,31 +204,48 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go s.handleUDP(c)
+
+		// Track UDP connection for graceful shutdown
+		s.mu.Lock()
+		s.udpConns = append(s.udpConns, c)
+		s.mu.Unlock()
+
+		go s.handleUDP(ctx, c)
 	}
 
 	for {
+		select {
+		case <-s.shutdown:
+			return nil
+		default:
+		}
+
 		conn, err := l.Accept()
 		if err != nil {
-			return err
+			select {
+			case <-s.shutdown:
+				return nil // Shutdown was requested, this is expected
+			default:
+				return err
+			}
 		}
 		go func(c net.Conn) {
 			// Create per-connection context with optional timeout and connection metadata
 			var connCtx context.Context
 			var cancel context.CancelFunc
-			
+
 			if s.config.ConnTimeout > 0 {
 				connCtx, cancel = context.WithTimeout(ctx, s.config.ConnTimeout)
 			} else {
 				connCtx, cancel = context.WithCancel(ctx)
 			}
 			defer cancel()
-			
+
 			// Add connection metadata to context
 			connCtx = context.WithValue(connCtx, ClientAddrKey, c.RemoteAddr().String())
 			connCtx = context.WithValue(connCtx, ServerAddrKey, c.LocalAddr().String())
 			connCtx = context.WithValue(connCtx, ConnTimeKey, time.Now())
-			
+
 			if err := s.ServeConn(connCtx, c); err != nil {
 				s.config.Logger.Printf("failed to serve connection: %v", err)
 			}
@@ -176,7 +253,9 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	}
 }
 
-// ServeConn is used to serve a single connection.
+// ServeConn handles the SOCKS5 protocol for a single client connection.
+// It performs authentication, parses the client request, and handles the requested command.
+// The connection is automatically closed when this method returns.
 func (s *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	defer func() {
 		_ = conn.Close() // Ignore close errors in defer

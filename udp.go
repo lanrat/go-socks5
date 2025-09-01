@@ -27,22 +27,30 @@ type UDPSession struct {
 
 // UDPSessionManager manages UDP sessions
 type UDPSessionManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*UDPSession // key: client address string
+	mu          sync.RWMutex
+	sessions    map[string]*UDPSession // key: client address string
+	cleanup     chan struct{}
+	cleanupOnce sync.Once
 }
 
 // NewUDPSessionManager creates a new UDP session manager
 func NewUDPSessionManager() *UDPSessionManager {
-	return &UDPSessionManager{
+	mgr := &UDPSessionManager{
 		sessions: make(map[string]*UDPSession),
+		cleanup:  make(chan struct{}),
 	}
+
+	// Start cleanup goroutine
+	go mgr.cleanupExpiredSessions()
+
+	return mgr
 }
 
 // RegisterSession registers a new UDP session
 func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Context, req *Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.sessions[clientAddr] = &UDPSession{
 		Context:    ctx,
 		ClientAddr: clientAddr,
@@ -55,7 +63,7 @@ func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Conte
 func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	session, exists := m.sessions[clientAddr]
 	return session, exists
 }
@@ -64,8 +72,38 @@ func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
 func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	delete(m.sessions, clientAddr)
+}
+
+// Stop gracefully stops the session manager
+func (m *UDPSessionManager) Stop() {
+	m.cleanupOnce.Do(func() {
+		close(m.cleanup)
+	})
+}
+
+// cleanupExpiredSessions removes expired UDP sessions
+func (m *UDPSessionManager) cleanupExpiredSessions() {
+	const sessionTimeout = 5 * time.Minute
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.cleanup:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			m.mu.Lock()
+			for addr, session := range m.sessions {
+				if now.Sub(session.CreatedAt) > sessionTimeout {
+					delete(m.sessions, addr)
+				}
+			}
+			m.mu.Unlock()
+		}
+	}
 }
 
 var udpPacketBufferPool = sync.Pool{
@@ -80,17 +118,31 @@ func getUDPPacketBuffer() []byte {
 
 func putUDPPacketBuffer(p []byte) {
 	p = p[:cap(p)]
-	udpPacketBufferPool.Put(&p)
+	udpPacketBufferPool.Put(p)
 }
 
 //FIXME: insecure implementation of UDP server, anyone could send package here without authentication
 
-func (s *Server) handleUDP(udpConn *net.UDPConn) {
+func (s *Server) handleUDP(ctx context.Context, udpConn *net.UDPConn) {
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		buffer := getUDPPacketBuffer()
 		n, src, err := udpConn.ReadFromUDP(buffer)
 		if err != nil {
-			s.config.Logger.Printf("udp socks: Failed to accept udp traffic: %v", err)
+			select {
+			case <-ctx.Done():
+				putUDPPacketBuffer(buffer)
+				return // Context cancelled, this is expected
+			default:
+				s.config.Logger.Printf("udp socks: Failed to accept udp traffic: %v", err)
+				putUDPPacketBuffer(buffer)
+				continue
+			}
 		}
 		buffer = buffer[:n]
 		go func() {
@@ -120,12 +172,14 @@ var ErrUDPFragmentNoSupported = errors.New("")
 func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func([]byte) error) error {
 	// RSV  Reserved X'0000'
 	// FRAG Current fragment number, do not support fragment here
-	header := []byte{0, 0, 0}
-	if len(udpPacket) <= 3 {
+	if len(udpPacket) < 3 {
 		err := fmt.Errorf("short UDP package header, %d bytes only", len(udpPacket))
 		s.config.Logger.Printf("udp socks: Failed to get UDP package header: %v", err)
 		return err
 	}
+
+	// Read header from the actual packet
+	header := udpPacket[:3]
 	if header[0] != 0x00 || header[1] != 0x00 {
 		err := fmt.Errorf("unsupported socks UDP package header, %+v", header[:2])
 		s.config.Logger.Printf("udp socks: Failed to parse UDP package header: %v", err)

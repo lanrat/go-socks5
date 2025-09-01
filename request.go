@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 )
 
 /******************************************************
@@ -80,13 +79,17 @@ var errUnrecognizedAddrType = fmt.Errorf("unrecognized address type")
 // zeroBindAddr used for TCP connect,  BND.ADDR and BND.PORT is unused
 var zeroBindAddr = AddrSpec{IP: net.IPv4zero, Port: 1080}
 
-// AddressRewriter is used to rewrite a destination transparently
+// AddressRewriter is used to rewrite a destination address transparently.
+// This can be used for implementing features like traffic routing, load balancing,
+// or address translation. The returned context can contain additional metadata.
 type AddressRewriter interface {
+	// Rewrite takes a request and returns a potentially modified destination address.
+	// The context may be modified to include additional routing information.
 	Rewrite(ctx context.Context, request *Request) (context.Context, *AddrSpec)
 }
 
-// AddrSpec is used to return the target AddrSpec
-// which may be specified as IPv4, IPv6, or a FQDN
+// AddrSpec represents a SOCKS5 address specification.
+// It can contain either an IP address (IPv4/IPv6) or a fully qualified domain name (FQDN).
 type AddrSpec struct {
 	FQDN string
 	IP   net.IP
@@ -109,7 +112,8 @@ func (a AddrSpec) Address() string {
 	return net.JoinHostPort(a.FQDN, strconv.Itoa(a.Port))
 }
 
-// A Request represents request received by a server
+// Request represents a SOCKS5 request received from a client.
+// It contains the parsed command, destination address, and authentication context.
 type Request struct {
 	// Protocol version
 	Version uint8
@@ -126,7 +130,9 @@ type Request struct {
 	bufConn      io.Reader
 }
 
-// NewRequest creates a new Request from the tcp connection
+// NewRequest parses a SOCKS5 request from the given reader.
+// It reads and validates the request header and destination address.
+// Returns an error if the request format is invalid or unsupported.
 func NewRequest(bufConn io.Reader) (*Request, error) {
 	// Read the version byte
 	header := []byte{0, 0, 0}
@@ -237,8 +243,8 @@ func (s *Server) handleConnect(ctx context.Context, conn net.Conn, req *Request)
 
 	// Start proxying
 	errCh := make(chan error, 2)
-	go proxy(target, req.bufConn, errCh)
-	go proxy(conn, target, errCh)
+	go proxy(ctx, target, req.bufConn, errCh)
+	go proxy(ctx, conn, target, errCh)
 
 	// Wait
 	for i := 0; i < 2; i++ {
@@ -281,11 +287,7 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 		return fmt.Errorf("associate to %v blocked by rules", req.DestAddr)
 	}
 
-	// check bindIP 1st
-	if len(s.config.BindIP) == 0 || s.config.BindIP.IsUnspecified() {
-		s.config.BindIP = net.ParseIP("127.0.0.1")
-	}
-
+	// Use the configured bind IP (guaranteed to be set during server creation)
 	bindAddr := AddrSpec{IP: s.config.BindIP, Port: s.config.BindPort}
 
 	if err := sendReply(conn, ReplySucceeded, &bindAddr); err != nil {
@@ -295,30 +297,30 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 	// Register UDP session for this client
 	clientAddr := conn.RemoteAddr().String()
 	s.udpSessionMgr.RegisterSession(clientAddr, ctx, req)
-	
+
 	// Ensure session cleanup when connection closes
 	defer s.udpSessionMgr.UnregisterSession(clientAddr)
 
-	// wait here till the client close the connection
-	// check every 10 secs
-	tmp := []byte{}
-	var neverTimeout time.Time
-	var err error
-	for {
-		if err = conn.SetReadDeadline(time.Now()); err != nil {
-			return fmt.Errorf("failed to set read deadline: %v", err)
-		}
-		if _, err = conn.Read(tmp); err == io.EOF {
-			break
-		} else {
-			if err = conn.SetReadDeadline(neverTimeout); err != nil {
-				return fmt.Errorf("failed to clear read deadline: %v", err)
-			}
-		}
-		time.Sleep(10 * time.Second)
-	}
+	// Wait for connection to close or context to be cancelled
+	// This blocks until the client closes the connection
+	done := make(chan error, 1)
+	go func() {
+		// This blocks until connection is closed (EOF) or an error occurs
+		_, err := io.Copy(io.Discard, conn)
+		done <- err
+	}()
 
-	return nil
+	select {
+	case err := <-done:
+		// Connection closed (EOF) or error occurred
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("connection monitoring failed: %v", err)
+		}
+		return nil
+	case <-ctx.Done():
+		// Context cancelled (server shutdown, timeout, etc.)
+		return ctx.Err()
+	}
 }
 
 /***********************************
@@ -434,11 +436,22 @@ type closeWriter interface {
 }
 
 // proxy is used to shuffle data from src to destination, and sends errors
-// down a dedicated channel
-func proxy(dst io.Writer, src io.Reader, errCh chan error) {
-	_, err := io.Copy(dst, src)
-	if tcpConn, ok := dst.(closeWriter); ok {
-		_ = tcpConn.CloseWrite() // Ignore close errors in proxy cleanup
+// down a dedicated channel. It respects context cancellation.
+func proxy(ctx context.Context, dst io.Writer, src io.Reader, errCh chan error) {
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := io.Copy(dst, src)
+		if tcpConn, ok := dst.(closeWriter); ok {
+			_ = tcpConn.CloseWrite() // Ignore close errors in proxy cleanup
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		errCh <- err
+	case <-ctx.Done():
+		errCh <- ctx.Err()
 	}
-	errCh <- err
 }
