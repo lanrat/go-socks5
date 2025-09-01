@@ -1,5 +1,8 @@
 # Socks5
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/lanrat/go-socks5)](https://goreportcard.com/report/github.com/lanrat/go-socks5)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/lanrat/go-socks5)](https://pkg.go.dev/github.com/lanrat/go-socks5)
+
 Provides the `socks5` package that implements a [SOCKS5 server](http://en.wikipedia.org/wiki/SOCKS).
 SOCKS (Secure Sockets) is used to route traffic between a client and server through
 an intermediate proxy layer. This can be used to bypass firewalls or NATs.
