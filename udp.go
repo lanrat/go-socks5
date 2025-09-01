@@ -6,11 +6,67 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 const maxUDPPacketSize = 2 * 1024
 
 var udpClientSrcAddrZero = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+
+// UDPSession represents a UDP association session
+type UDPSession struct {
+	// Context from the ASSOCIATE command, with any rule modifications
+	Context context.Context
+	// Client's control connection address for session identification
+	ClientAddr string
+	// Time when session was created
+	CreatedAt time.Time
+	// Request that created this session
+	Request *Request
+}
+
+// UDPSessionManager manages UDP sessions
+type UDPSessionManager struct {
+	mu       sync.RWMutex
+	sessions map[string]*UDPSession // key: client address string
+}
+
+// NewUDPSessionManager creates a new UDP session manager
+func NewUDPSessionManager() *UDPSessionManager {
+	return &UDPSessionManager{
+		sessions: make(map[string]*UDPSession),
+	}
+}
+
+// RegisterSession registers a new UDP session
+func (m *UDPSessionManager) RegisterSession(clientAddr string, ctx context.Context, req *Request) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.sessions[clientAddr] = &UDPSession{
+		Context:    ctx,
+		ClientAddr: clientAddr,
+		CreatedAt:  time.Now(),
+		Request:    req,
+	}
+}
+
+// GetSession retrieves a UDP session by client address
+func (m *UDPSessionManager) GetSession(clientAddr string) (*UDPSession, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	session, exists := m.sessions[clientAddr]
+	return session, exists
+}
+
+// UnregisterSession removes a UDP session
+func (m *UDPSessionManager) UnregisterSession(clientAddr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	delete(m.sessions, clientAddr)
+}
 
 var udpPacketBufferPool = sync.Pool{
 	New: func() interface{} {
@@ -118,7 +174,14 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	targetAddrRawSize += 2
 	targetAddrRaw = targetAddrRaw[:targetAddrRawSize]
 
-	ctx := context.TODO()
+	// Try to get context from UDP session, fallback to background context
+	ctx := context.Background()
+	if session, exists := s.udpSessionMgr.GetSession(srcAddr.String()); exists {
+		ctx = session.Context
+	} else {
+		// Log when UDP packet arrives without an associated session
+		s.config.Logger.Printf("udp socks: UDP packet from %v has no associated session", srcAddr)
+	}
 
 	// resolve addr.
 	if targetAddrSpec.FQDN != "" {

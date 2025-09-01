@@ -282,7 +282,6 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 		}
 		return fmt.Errorf("associate to %v blocked by rules", req.DestAddr)
 	}
-	_ = ctx // TODO: Context ready for future UDP operations
 
 	// check bindIP 1st
 	if len(s.config.BindIP) == 0 || s.config.BindIP.IsUnspecified() {
@@ -294,6 +293,13 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 	if err := sendReply(conn, ReplySucceeded, &bindAddr); err != nil {
 		return fmt.Errorf("failed to send reply: %v", err)
 	}
+
+	// Register UDP session for this client
+	clientAddr := conn.RemoteAddr().String()
+	s.udpSessionMgr.RegisterSession(clientAddr, ctx, req)
+	
+	// Ensure session cleanup when connection closes
+	defer s.udpSessionMgr.UnregisterSession(clientAddr)
 
 	// wait here till the client close the connection
 	// check every 10 secs
