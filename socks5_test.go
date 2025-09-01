@@ -47,19 +47,19 @@ func TestSOCKS5_Connect(t *testing.T) {
 	creds := StaticCredentials{
 		"foo": "bar",
 	}
-	cator := UserPassAuthenticator{Credentials: creds}
+	auth := UserPassAuthenticator{Credentials: creds}
 	conf := &Config{
-		AuthMethods: []Authenticator{cator},
+		AuthMethods: []Authenticator{auth},
 		Logger:      log.New(os.Stdout, "", log.LstdFlags),
 	}
-	serv, err := New(conf)
+	server, err := New(conf)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
 	// Start listening
 	go func() {
-		if err := serv.ListenAndServe("tcp", "127.0.0.1:12365"); err != nil {
+		if err := server.ListenAndServe("tcp", "127.0.0.1:12365"); err != nil {
 			t.Errorf("err: %v", err)
 		}
 	}()
@@ -71,7 +71,7 @@ func TestSOCKS5_Connect(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
-	// Connect, auth and connec to local
+	// Connect, auth and connect to local
 	req := bytes.NewBuffer(nil)
 	req.Write([]byte{5})
 	req.Write([]byte{2, AuthMethodNoAuth, AuthMethodUserPass})

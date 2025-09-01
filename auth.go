@@ -52,7 +52,7 @@ const (
 
 const (
 	// AuthUserPassVersion the VER field contains the current version
-	// of the subnegotiation, which is X'01'
+	// of the sub-negotiation, which is X'01'
 	AuthUserPassVersion = uint8(1)
 	// AuthUserPassStatusSuccess a STATUS field of X'00' indicates success
 	AuthUserPassStatusSuccess = uint8(0)
@@ -173,9 +173,9 @@ func (s *Server) authenticate(conn io.Writer, bufConn io.Reader) (*AuthContext, 
 
 	// Select a usable method
 	for _, method := range methods {
-		cator, found := s.authMethods[method]
+		auth, found := s.authMethods[method]
 		if found {
-			return cator.Authenticate(bufConn, conn)
+			return auth.Authenticate(bufConn, conn)
 		}
 	}
 

@@ -328,7 +328,7 @@ func (s *Server) handleAssociate(ctx context.Context, conn net.Conn, req *Reques
 ************************************/
 
 // readAddrSpec is used to read AddrSpec.
-// Expects an address type byte, follwed by the address and port
+// Expects an address type byte, followed by the address and port
 func readAddrSpec(r io.Reader) (*AddrSpec, error) {
 	d := &AddrSpec{}
 

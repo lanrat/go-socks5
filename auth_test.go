@@ -36,9 +36,9 @@ func TestPasswordAuth_Valid(t *testing.T) {
 		"foo": "bar",
 	}
 
-	cator := UserPassAuthenticator{Credentials: cred}
+	auth := UserPassAuthenticator{Credentials: cred}
 
-	s, _ := New(&Config{AuthMethods: []Authenticator{cator}})
+	s, _ := New(&Config{AuthMethods: []Authenticator{auth}})
 
 	ctx, err := s.authenticate(&resp, req)
 	if err != nil {
@@ -73,8 +73,8 @@ func TestPasswordAuth_Invalid(t *testing.T) {
 	cred := StaticCredentials{
 		"foo": "bar",
 	}
-	cator := UserPassAuthenticator{Credentials: cred}
-	s, _ := New(&Config{AuthMethods: []Authenticator{cator}})
+	auth := UserPassAuthenticator{Credentials: cred}
+	s, _ := New(&Config{AuthMethods: []Authenticator{auth}})
 
 	ctx, err := s.authenticate(&resp, req)
 	if err != ErrUserAuthFailed {
@@ -99,9 +99,9 @@ func TestNoSupportedAuth(t *testing.T) {
 	cred := StaticCredentials{
 		"foo": "bar",
 	}
-	cator := UserPassAuthenticator{Credentials: cred}
+	auth := UserPassAuthenticator{Credentials: cred}
 
-	s, _ := New(&Config{AuthMethods: []Authenticator{cator}})
+	s, _ := New(&Config{AuthMethods: []Authenticator{auth}})
 
 	ctx, err := s.authenticate(&resp, req)
 	if err != ErrNoSupportedAuth {

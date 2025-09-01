@@ -63,7 +63,7 @@ var ErrUDPFragmentNoSupported = errors.New("")
 
 func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func([]byte) error) error {
 	// RSV  Reserved X'0000'
-	// FRAG Current fragment number, donnot support fragment here
+	// FRAG Current fragment number, do not support fragment here
 	header := []byte{0, 0, 0}
 	if len(udpPacket) <= 3 {
 		err := fmt.Errorf("short UDP package header, %d bytes only", len(udpPacket))
