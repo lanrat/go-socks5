@@ -56,7 +56,7 @@ type Config struct {
 	// Optional function for dialing out
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 
-	DialUDP func(network string, udpClientSrcAddr, targetUDPAddr *net.UDPAddr) (net.Conn, error)
+	DialUDP func(ctx context.Context, network string, udpClientSrcAddr, targetUDPAddr *net.UDPAddr) (net.Conn, error)
 }
 
 // Server is responsible for accepting connections and handling

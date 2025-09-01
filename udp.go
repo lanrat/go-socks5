@@ -118,9 +118,11 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 	targetAddrRawSize += 2
 	targetAddrRaw = targetAddrRaw[:targetAddrRawSize]
 
+	ctx := context.TODO()
+
 	// resolve addr.
 	if targetAddrSpec.FQDN != "" {
-		_, addr, err := s.config.Resolver.Resolve(context.TODO(), targetAddrSpec.FQDN)
+		_, addr, err := s.config.Resolver.Resolve(ctx, targetAddrSpec.FQDN)
 		if err != nil {
 			err := fmt.Errorf("failed to resolve destination '%v': %v", targetAddrSpec.FQDN, err)
 			s.config.Logger.Printf("udp socks: %+v", err)
@@ -138,14 +140,14 @@ func (s *Server) serveUDPConn(udpPacket []byte, srcAddr *net.UDPAddr, reply func
 
 	dialUDP := s.config.DialUDP
 	if dialUDP == nil {
-		dialUDP = func(_net string, laddr, raddr *net.UDPAddr) (net.Conn, error) {
+		dialUDP = func(ctx context.Context, _net string, laddr, raddr *net.UDPAddr) (net.Conn, error) {
 			return net.DialUDP(_net, udpClientSrcAddrZero, raddr)
 		}
 	}
 
 	udpClientSrcAddr := &net.UDPAddr{IP: net.IPv4zero, Port: srcAddr.Port}
 
-	target, err := dialUDP("udp", udpClientSrcAddr, targetUDPAddr)
+	target, err := dialUDP(ctx, "udp", udpClientSrcAddr, targetUDPAddr)
 	if err != nil {
 		err = fmt.Errorf("connect to %v failed: %v", targetUDPAddr, err)
 		s.config.Logger.Printf("udp socks: %+v\n", err)
